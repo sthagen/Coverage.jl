@@ -9,10 +9,11 @@ web service. It exports the `submit` and `submit_local` methods.
 module Codecov
     using HTTP
     using Coverage
+    using CoverageTools
     using JSON
     using LibGit2
 
-    export submit, submit_token, submit_local, submit_generic
+    export submit, submit_local, submit_generic
 
     #=
     JSON structure for Codecov.io
@@ -45,16 +46,14 @@ module Codecov
     kwargs provides default values to insert into args_array, only if they are
     not already specified in args_array.
     """
-    function set_defaults(args_array; kwargs...)
-        defined_names = keys(args_array)
-        is_args_array = Pair{Symbol, Any}[]
-        is_args_array = append!(is_args_array, args_array)
+    function set_defaults(args_array::Dict; kwargs...)
+        args_array = copy(args_array)
         for kwarg in kwargs
-            if !(kwarg[1] in defined_names)
-                push!(is_args_array, kwarg)
+            if !haskey(args_array, kwarg[1])
+                push!(args_array, kwarg)
             end
         end
-        return is_args_array
+        return args_array
     end
 
     """
@@ -65,11 +64,12 @@ module Codecov
     on TravisCI or AppVeyor. If running locally, use `submit_local`.
     """
     function submit(fcs::Vector{FileCoverage}; kwargs...)
-        submit_generic(fcs; add_ci_to_kwargs(;kwargs...)...)
+        submit_generic(fcs, add_ci_to_kwargs(; kwargs...))
     end
 
 
-    function add_ci_to_kwargs(;kwargs...)
+    add_ci_to_kwargs(; kwargs...) = add_ci_to_kwargs(Dict{Symbol,Any}(kwargs))
+    function add_ci_to_kwargs(kwargs::Dict)
         if lowercase(get(ENV, "APPVEYOR", "false")) == "true"
             appveyor_pr = get(ENV, "APPVEYOR_PULL_REQUEST_NUMBER", "")
             appveyor_job = join(
@@ -126,6 +126,42 @@ module Codecov
                 build_url    = ENV["BUILD_URL"],
                 jenkins_url  = ENV["JENKINS_URL"],
             )
+        elseif haskey(ENV, "BUILD_BUILDURI") # Azure Pipelines
+            ref = get(ENV, "SYSTEM_PULLREQUEST_TARGETBRANCH", ENV["BUILD_SOURCEBRANCHNAME"])
+            branch = startswith(ref, "refs/heads/") ? ref[12:end] : ref
+            kwargs = set_defaults(kwargs,
+                service      = "azure_pipelines",
+                branch       = branch,
+                commit       = ENV["BUILD_SOURCEVERSION"],
+                pull_request = get(ENV, "SYSTEM_PULLREQUEST_PULLREQUESTNUMBER", ""),
+                job          = ENV["BUILD_DEFINITIONNAME"],
+                slug         = ENV["BUILD_REPOSITORY_NAME"],
+                build        = ENV["BUILD_BUILDID"],
+            )
+        elseif haskey(ENV, "GITHUB_ACTION") # GitHub Actions
+            event_path = open(JSON.Parser.parse, ENV["GITHUB_EVENT_PATH"])
+            ref = ENV["GITHUB_REF"]
+            if startswith(ref, "refs/heads/")
+                branch = ref[12:end]
+                ga_pr = "false"
+            elseif startswith(ref, "refs/tags/")
+                branch = ref[11:end]
+                ga_pr = "false"
+            elseif startswith(ref, "refs/pull/")
+                branch = ENV["GITHUB_HEAD_REF"]
+                ga_pr_info = get(event_path, "pull_request", Dict())
+                ga_pr = get(ga_pr_info, "number", "false")
+            end
+            ga_build_url = "https://github.com/$(ENV["GITHUB_REPOSITORY"])/actions/runs/$(ENV["GITHUB_RUN_ID"])"
+            kwargs = set_defaults(kwargs,
+                service      = "github-actions",
+                branch       = branch,
+                commit       = ENV["GITHUB_SHA"],
+                pull_request = ga_pr,
+                slug         = ENV["GITHUB_REPOSITORY"],
+                build        = ENV["GITHUB_RUN_ID"],
+                build_url    = ga_build_url,
+            )
         else
             error("No compatible CI platform detected")
         end
@@ -142,10 +178,11 @@ module Codecov
     `token` keyword argument or the `CODECOV_TOKEN` environment variable.
     """
     function submit_local(fcs::Vector{FileCoverage}, dir::AbstractString=pwd(); kwargs...)
-        submit_generic(fcs; add_local_to_kwargs(dir; kwargs...)...)
+        submit_generic(fcs, add_local_to_kwargs(dir; kwargs...))
     end
 
-    function add_local_to_kwargs(dir; kwargs...)
+    add_local_to_kwargs(dir; kwargs...) = add_local_to_kwargs(dir, Dict{Symbol,Any}(kwargs))
+    function add_local_to_kwargs(dir, kwargs::Dict)
         LibGit2.with(LibGit2.GitRepoExt(dir)) do repo
             LibGit2.with(LibGit2.head(repo)) do headref
                 branch_name = LibGit2.shortname(headref) # this function returns a String
@@ -157,15 +194,8 @@ module Codecov
             end
         end
 
-        if haskey(ENV, "REPO_TOKEN")
-            @warn "the environment variable REPO_TOKEN is deprecated, use CODECOV_TOKEN instead"
-            kwargs = set_defaults(kwargs, token = ENV["REPO_TOKEN"])
-        end
-
         return kwargs
     end
-
-    @deprecate submit_token submit_local
 
 
     """
@@ -180,51 +210,47 @@ module Codecov
     The `dry_run` keyword can be used to prevent the http request from
     being generated.
     """
-    function submit_generic(fcs::Vector{FileCoverage}; kwargs...)
+    submit_generic(fcs::Vector{FileCoverage}; kwargs...) =
+        submit_generic(fcs, Dict{Symbol,Any}(kwargs))
+    function submit_generic(fcs::Vector{FileCoverage}, kwargs::Dict)
         @assert length(kwargs) > 0
-        dry_run = false
-        verbose = true
-        for (k,v) in kwargs
-            if k == :dry_run
-                dry_run = true
-            end
-            if k == :verbose
-                verbose = v
-            end
-        end
-        uri_str = construct_uri_string(;kwargs...)
+        dry_run = get(kwargs, :dry_run, false)
 
-        if verbose
-            @info "Codecov.io API URL:\n" * mask_token(uri_str)
-        end
+        uri_str = construct_uri_string(kwargs)
+
+        @info "Submitting data to Codecov..."
+        @debug "Codecov.io API URL:\n" * mask_token(uri_str)
 
         if !dry_run
-            heads   = Dict("Content-Type" => "application/json")
+            heads   = Dict("Content-Type" => "application/json",
+                           "Accept" => "application/json")
             data    = to_json(fcs)
             req     = HTTP.post(uri_str; body = JSON.json(data), headers = heads)
-            @info "Result of submission:" * String(req)
+            @debug "Result of submission:" * String(req)
         end
     end
 
-    function construct_uri_string(;kwargs...)
-        if haskey(ENV, "CODECOV_URL")
-            kwargs = set_defaults(kwargs, codecov_url = ENV["CODECOV_URL"])
-        end
+    function construct_uri_string(kwargs::Dict)
+        url = get(ENV, "CODECOV_URL", "")
+        isempty(url) || (kwargs = set_defaults(kwargs, codecov_url = url))
 
-        if haskey(ENV, "CODECOV_TOKEN")
-            kwargs = set_defaults(kwargs, token = ENV["CODECOV_TOKEN"])
-        end
+        token = get(ENV, "CODECOV_TOKEN", "")
+        isempty(token) || (kwargs = set_defaults(kwargs, token = token))
 
-        codecov_url = "https://codecov.io"
-        for (k,v) in kwargs
-            if k == :codecov_url
-                codecov_url = v
-            end
-        end
-        @assert codecov_url[end] != "/" "the codecov_url should not end with a /, given url $(codecov_url)"
+        flags = get(ENV, "CODECOV_FLAGS", "")
+        isempty(flags) || (kwargs = set_defaults(kwargs; flags = flags))
+
+        name = get(ENV, "CODECOV_NAME", "")
+        isempty(name) || (kwargs = set_defaults(kwargs; name = name))
+
+        codecov_url = get(kwargs, :codecov_url, "https://codecov.io")
+        codecov_url[end] == "/" && error("the codecov_url should not end with a /, given url $(repr(codecov_url))")
 
         uri_str = "$(codecov_url)/upload/v2?"
-        for (k,v) in kwargs
+        for (k, v) in kwargs
+            # add all except a few special key/value pairs to the URL
+            # (:verbose is there for backwards compatibility with versions
+            # of this code that treated it in a special way)
             if k != :codecov_url && k != :dry_run && k != :verbose
                 uri_str = "$(uri_str)&$(k)=$(v)"
             end

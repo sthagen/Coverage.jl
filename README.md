@@ -1,8 +1,7 @@
 Coverage.jl
 ===========
 
-[![Build Status](https://travis-ci.org/JuliaCI/Coverage.jl.svg?branch=master)](https://travis-ci.org/JuliaCI/Coverage.jl)
-[![Build status](https://ci.appveyor.com/api/projects/status/07fkrnj70sevoqny?svg=true)](https://ci.appveyor.com/project/JuliaCI/coverage-jl)
+[![Build Status](https://travis-ci.com/JuliaCI/Coverage.jl.svg?branch=master)](https://travis-ci.com/JuliaCI/Coverage.jl)
 [![Coverage Status](https://coveralls.io/repos/github/JuliaCI/Coverage.jl/badge.svg?branch=master)](https://coveralls.io/github/JuliaCI/Coverage.jl?branch=master)
 [![codecov](https://codecov.io/gh/JuliaCI/Coverage.jl/branch/master/graph/badge.svg)](https://codecov.io/gh/JuliaCI/Coverage.jl)
 
@@ -11,6 +10,12 @@ Coverage.jl
 **Code coverage**: Julia can track how many times, if any, each line of your code is run. This is useful for measuring how much of your code base your tests actually test, and can reveal the parts of your code that are not tested and might be hiding a bug. You can use Coverage.jl to summarize the results of this tracking, or to send them to a service like [Coveralls.io](https://coveralls.io) or [Codecov.io](https://codecov.io/github/JuliaCI).
 
 **Memory allocation**: Julia can track how much memory is allocated by each line of your code. This can reveal problems like type instability, or operations that you might have thought were cheap (in terms of memory allocated) but aren't (i.e. accidental copying).
+
+## Comparison of coverage packages
+- [CoverageTools.jl](https://github.com/JuliaCI/CoverageTools.jl): core functionality for processing code coverage and memory allocation results
+- **[Coverage.jl](https://github.com/JuliaCI/Coverage.jl) (this package): allows you to take coverage results and submit them to online web services such as Codecov.io and Coveralls.io**
+
+Most users will want to use [Coverage.jl](https://github.com/JuliaCI/Coverage.jl).
 
 ## Working locally
 
@@ -22,7 +27,7 @@ julia --code-coverage=user
 julia --code-coverage=tracefile-%p.info --code-coverage=user  # available in Julia v1.1+
 ```
 
-*Step 2:* Run your tests (e.g., `include("runtests.jl")`) and quit Julia.
+*Step 2:* Run your tests (e.g., `include("runtests.jl")`) and quit Julia. (If you use `Pkg.test` to run your tests, set the `coverage` keyword argument to `true`, i.e. `Pkg.test("MyPkg"; coverage=true)`.)
 
 *Step 3:* Navigate to the top-level directory of your package, restart Julia (with no special flags) and analyze your code coverage:
 
@@ -58,7 +63,7 @@ julia --track-allocation=user
 ```
 Then:
 - Run whatever commands you wish to test. This first run is to ensure that everything is compiled (because compilation allocates memory).
-- Call `Profile.clear_malloc_data()`)
+- Call `Profile.clear_malloc_data()`
 - Run your commands again
 - Quit julia
 
@@ -85,7 +90,7 @@ When using Coverage.jl locally, over time a lot of `.cov` files can accumulate. 
 
 ## Tracking Coverage with [Codecov.io](https://codecov.io)
 
-[Codecov.io](https://codecov.io) is a test coverage tracking tool that integrates with your continuous integration servers (e.g. [TravisCI](https://travis-ci.org/)) or with HTTP POSTs from your very own computer at home.
+[Codecov.io](https://codecov.io) is a test coverage tracking tool that integrates with your continuous integration servers (e.g. [TravisCI](https://travis-ci.com/)) or with HTTP POSTs from your very own computer at home.
 
 1. Enable [Codecov.io](https://codecov.io) for your repository.
    - If it is public on GitHub and you are using using Travis, CircleCI or
@@ -133,7 +138,7 @@ When using Coverage.jl locally, over time a lot of `.cov` files can accumulate. 
 
 ## Tracking Coverage with [Coveralls.io](https://coveralls.io)
 
-[Coveralls.io](https://coveralls.io) is a test coverage tracking tool that integrates with your continuous integration solution (e.g. [TravisCI](https://travis-ci.org/)).
+[Coveralls.io](https://coveralls.io) is a test coverage tracking tool that integrates with your continuous integration solution (e.g. [TravisCI](https://travis-ci.com/)).
 
 1. Enable [Coveralls.io](https://coveralls.io) for your repository. If it is
    public on GitHub and you are using TravisCI, this is all you need to do. If

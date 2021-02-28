@@ -8,12 +8,13 @@ web service. It exports the `submit` and `submit_local` methods.
 """
 module Coveralls
     using Coverage
+    using CoverageTools
     using HTTP
     using JSON
     using LibGit2
     using MbedTLS
 
-    export submit, submit_token, submit_local
+    export submit, submit_local
 
     #=
     JSON structure for Coveralls
@@ -39,14 +40,19 @@ module Coveralls
 
     # to_json
     # Convert a FileCoverage instance to its Coveralls JSON representation
-    to_json(fc::FileCoverage) = Dict("name"          => fc.filename,
-                                     "source_digest" => digest(MD_MD5, fc.source, "secret"),
-                                     "coverage"      => fc.coverage)
+    function to_json(fc::FileCoverage)
+        name = Sys.iswindows() ? replace(fc.filename, '\\' => '/') : fc.filename
+        return Dict("name"          => name,
+                    "source_digest" => digest(MD_MD5, fc.source, "secret"),
+                    "coverage"      => fc.coverage)
+    end
 
     # Format the body argument to HTTP.post
-    makebody(data::Dict) =
-        Dict("json_file" => HTTP.Multipart("json_file", IOBuffer(JSON.json(data)),
-                                           "application/json"))
+    function makebody(data::Dict)
+        iodata = IOBuffer(JSON.json(data))
+        json_file = HTTP.Multipart("json_file", iodata, "application/json")
+        return Dict("json_file" => json_file)
+    end
 
     """
         submit(fcs::Vector{FileCoverage}; kwargs...)
@@ -56,23 +62,29 @@ module Coveralls
     on TravisCI, AppVeyor or Jenkins. If running locally, use `submit_local`.
     """
     function submit(fcs::Vector{FileCoverage}; kwargs...)
-        verbose = get(kwargs, :verbose, true)
         data = prepare_request(fcs, false)
-        post_request(data, verbose)
+        post_request(data)
     end
 
-    function prepare_request(fcs::Vector{FileCoverage}, local_env, git_info=query_git_info)
+    function prepare_request(fcs::Vector{FileCoverage}, local_env::Bool, git_info=query_git_info)
         data = Dict{String,Any}("source_files" => map(to_json, fcs))
 
         if local_env
             # Attempt to parse git info via git_info, unless the user explicitly disables it by setting git_info to nothing
+            data["service_name"] = "local"
             data["git"] = parse_git_info(git_info)
         elseif lowercase(get(ENV, "APPVEYOR", "false")) == "true"
-            data["service_job_id"] = ENV["APPVEYOR_JOB_ID"]
+            data["service_job_number"] = ENV["APPVEYOR_BUILD_NUMBER"]
+            data["service_job_id"] = ENV["APPVEYOR_BUILD_ID"]
             data["service_name"] = "appveyor"
+            appveyor_pr = get(ENV, "APPVEYOR_PULL_REQUEST_NUMBER", "")
+            isempty(appveyor_pr) || (data["service_pull_request"] = appveyor_pr)
         elseif lowercase(get(ENV, "TRAVIS", "false")) == "true"
+            data["service_number"] = ENV["TRAVIS_BUILD_NUMBER"]
             data["service_job_id"] = ENV["TRAVIS_JOB_ID"]
             data["service_name"] = "travis-ci"
+            travis_pr = get(ENV, "TRAVIS_PULL_REQUEST", "")
+            isempty(travis_pr) || (data["service_pull_request"] = travis_pr)
         elseif lowercase(get(ENV, "JENKINS", "false")) == "true"
             data["service_job_id"] = ENV["BUILD_ID"]
             data["service_name"] = "jenkins-ci"
@@ -82,11 +94,45 @@ module Coveralls
             if get(ENV, "CI_PULL_REQUEST", "false") == "false"
                 data["git"]["branch"] = split(ENV["GIT_BRANCH"], "/")[2]
             end
+        elseif haskey(ENV, "GITHUB_ACTION")
+            data["service_job_id"] = ENV["GITHUB_RUN_ID"]
+            data["service_name"] = "github"
+            data["git"] = parse_git_info(git_info)
+
+            event_path = open(JSON.Parser.parse, ENV["GITHUB_EVENT_PATH"])
+            github_pr_info = get(event_path, "pull_request", Dict())
+            github_pr = get(github_pr_info, "number", "")
+            isempty(github_pr) || (data["service_pull_request"] = github_pr)
         else
+            data["git"] = parse_git_info(git_info)
+        end
+
+        service_name = get(ENV, "COVERALLS_SERVICE_NAME", "")
+        isempty(service_name) || (data["service_name"] = service_name)
+
+        service_number = get(ENV, "COVERALLS_SERVICE_NUMBER", "")
+        isempty(service_number) || (data["service_number"] = service_number)
+
+        service_job_number = get(ENV, "COVERALLS_SERVICE_JOB_NUMBER", "")
+        isempty(service_job_number) || (data["service_job_number"] = service_job_number)
+
+        jobid = get(ENV, "COVERALLS_SERVICE_JOB_ID", "")
+        isempty(jobid) || (data["service_job_id"] = jobid)
+
+        flag_name = get(ENV, "COVERALLS_FLAG_NAME", "")
+        isempty(flag_name) || (data["flag_name"] = flag_name)
+
+        ci_pr = get(ENV, "COVERALLS_PULL_REQUEST", "")
+        isempty(ci_pr) || (data["service_pull_request"] = ci_pr)
+
+        if !haskey(data, "service_name")
             error("No compatible CI platform detected")
         end
 
         data = add_repo_token(data, local_env)
+        if get(ENV, "COVERALLS_PARALLEL", "false") == "true"
+            data["parallel"] = "true"
+        end
         return data
     end
 
@@ -158,15 +204,16 @@ module Coveralls
     """
     function submit_local(fcs::Vector{FileCoverage}, git_info=query_git_info; kwargs...)
         data = prepare_request(fcs, true, git_info)
-        verbose = get(kwargs, :verbose, true)
-        post_request(data, verbose)
+        post_request(data)
     end
 
     # posts the actual request given the data
-    function post_request(data, verbose)
-        verbose && @info "Submitting data to Coveralls..."
-        req = HTTP.post("https://coveralls.io/api/v1/jobs", HTTP.Form(makebody(data)))
-        verbose && @info "Result of submission:\n" * String(req.body)
+    function post_request(data)
+        @info "Submitting data to Coveralls..."
+        coveralls_url = get(ENV, "COVERALLS_URL", "https://coveralls.io/api/v1/jobs")
+        req = HTTP.post(coveralls_url, HTTP.Form(makebody(data)))
+        @debug "Result of submission:\n" * String(req)
+        nothing
     end
 
     # adds the repo token to the data
@@ -185,6 +232,5 @@ module Coveralls
         end
         return data
     end
-    @deprecate submit_token submit_local
 
 end  # module Coveralls
